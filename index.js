@@ -1,10 +1,12 @@
 import { Telegraf, Markup } from "telegraf";
+import FormData from "form-data";
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
+// 🧠 OpenAI key
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-// 🧠 память языка
+// 🌍 память языка
 const userLang = {};
 
 // 🌍 языки
@@ -14,7 +16,7 @@ const langMap = {
   de: { label: "Немецкий", flag: "🇩🇪" },
 };
 
-// 🌍 перевод
+// 🌍 перевод (Google unofficial, стабильный)
 async function translate(text, lang) {
   try {
     const res = await fetch(
@@ -25,14 +27,14 @@ async function translate(text, lang) {
     );
 
     const data = await res.json();
-    return data?.[0]?.map((x) => x[0]).join("") || "ошибка перевода";
-  } catch (e) {
-    return "ошибка перевода: " + String(e);
+    return data?.[0]?.map((x) => x[0]).join("") || text;
+  } catch {
+    return "ошибка перевода";
   }
 }
 
 // 🎛 клавиатура
-function menu(chatId) {
+function menu() {
   return Markup.inlineKeyboard([
     [Markup.button.callback("🇪🇸 Испанский", "es")],
     [Markup.button.callback("🇮🇹 Итальянский", "it")],
@@ -40,17 +42,17 @@ function menu(chatId) {
   ]);
 }
 
-// 🟢 start
+// 🟢 старт
 bot.start(async (ctx) => {
   const lang = userLang[ctx.chat.id] || "es";
 
   await ctx.reply(
-    "👋 Привет!\n\nВыбери язык:",
-    menu(ctx.chat.id)
+    "👋 Бот переводчик + голос\n\nВыбери язык:",
+    menu()
   );
 });
 
-// 🌍 выбор языка
+// 🌍 язык
 bot.action("es", (ctx) => {
   userLang[ctx.chat.id] = "es";
   ctx.reply("🇪🇸 Испанский выбран");
@@ -71,17 +73,17 @@ bot.on("text", async (ctx) => {
   if (ctx.message.text.startsWith("/")) return;
 
   const lang = userLang[ctx.chat.id] || "es";
-
   const translated = await translate(ctx.message.text, lang);
 
-  ctx.reply("🌍 Перевод:\n\n" + translated);
+  await ctx.reply("🌍 Перевод:\n\n" + translated);
 });
 
-// 🎤 ГОЛОС (СТАБИЛЬНЫЙ OPENAI WHISPER)
+// 🎤 ГОЛОС (СТАБИЛЬНЫЙ WHISPER OPENAI)
 bot.on("voice", async (ctx) => {
   try {
     await ctx.reply("🎤 Распознаю голос...");
 
+    // файл из Telegram
     const file = await ctx.telegram.getFile(ctx.message.voice.file_id);
 
     const fileUrl =
@@ -89,15 +91,22 @@ bot.on("voice", async (ctx) => {
       file.file_path;
 
     const audioRes = await fetch(fileUrl);
-    if (!audioRes.ok) throw new Error("Не удалось скачать файл");
+
+    if (!audioRes.ok) {
+      throw new Error("Не удалось скачать голос");
+    }
 
     const buffer = Buffer.from(await audioRes.arrayBuffer());
 
-    const formData = new FormData();
-    const blob = new Blob([buffer], { type: "audio/ogg" });
+    // multipart form-data
+    const form = new FormData();
 
-    formData.append("file", blob, "voice.ogg");
-    formData.append("model", "whisper-1");
+    form.append("file", buffer, {
+      filename: "voice.ogg",
+      contentType: "audio/ogg",
+    });
+
+    form.append("model", "whisper-1");
 
     const res = await fetch(
       "https://api.openai.com/v1/audio/transcriptions",
@@ -105,14 +114,19 @@ bot.on("voice", async (ctx) => {
         method: "POST",
         headers: {
           Authorization: `Bearer ${OPENAI_API_KEY}`,
+          ...form.getHeaders(),
         },
-        body: formData,
+        body: form,
       }
     );
 
     const data = await res.json();
 
-    const text = data?.text || "не удалось распознать речь";
+    if (!data.text) {
+      throw new Error(JSON.stringify(data));
+    }
+
+    const text = data.text;
 
     const lang = userLang[ctx.chat.id] || "es";
     const translated = await translate(text, lang);
@@ -124,7 +138,7 @@ bot.on("voice", async (ctx) => {
         translated
     );
   } catch (e) {
-    await ctx.reply("❌ Ошибка голосового: " + String(e.message || e));
+    await ctx.reply("❌ Ошибка голосового: " + (e.message || e));
   }
 });
 
