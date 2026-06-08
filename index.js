@@ -80,28 +80,54 @@ bot.on("voice", async (ctx) => {
     await ctx.reply("🎤 Распознаю голос...");
 
     const file = await ctx.telegram.getFile(ctx.message.voice.file_id);
+
     const fileUrl =
       `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/` +
       file.file_path;
 
-    const audio = await fetch(fileUrl);
-    const buffer = Buffer.from(await audio.arrayBuffer());
+    const audioRes = await fetch(fileUrl);
 
-    const transcription = await openai.audio.transcriptions.create({
-      file: new File([buffer], "voice.ogg", { type: "audio/ogg" }),
-      model: "whisper-1",
-    });
+    if (!audioRes.ok) {
+      throw new Error("Не удалось скачать голос из Telegram");
+    }
 
-    const text = transcription.text;
+    const arrayBuffer = await audioRes.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    // 🧠 НОРМАЛЬНЫЙ UPLOAD ДЛЯ OPENAI
+    const formData = new FormData();
+    const blob = new Blob([buffer], { type: "audio/ogg" });
+
+    formData.append("file", blob, "voice.ogg");
+    formData.append("model", "whisper-1");
+
+    const transcriptionRes = await fetch(
+      "https://api.openai.com/v1/audio/transcriptions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        },
+        body: formData,
+      }
+    );
+
+    const data = await transcriptionRes.json();
+
+    const text = data?.text || "не удалось распознать речь";
 
     const lang = userLang[ctx.chat.id] || "es";
+
     const translated = await translate(text, lang);
 
-    ctx.reply(
-      `📝 Текст:\n${text}\n\n🌍 Перевод:\n${translated}`
+    await ctx.reply(
+      "📝 Текст:\n" +
+        text +
+        "\n\n🌍 Перевод:\n" +
+        translated
     );
   } catch (e) {
-    ctx.reply("Ошибка голосового: " + String(e));
+    await ctx.reply("❌ Ошибка голосового: " + String(e.message || e));
   }
 });
 
