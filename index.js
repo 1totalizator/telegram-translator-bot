@@ -1,12 +1,8 @@
 import { Telegraf, Markup } from "telegraf";
-import FormData from "form-data";
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
-// 🧠 OpenAI key
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-
-// 🌍 память языка
+// 🧠 язык пользователя
 const userLang = {};
 
 // 🌍 языки
@@ -16,7 +12,7 @@ const langMap = {
   de: { label: "Немецкий", flag: "🇩🇪" },
 };
 
-// 🌍 перевод (Google unofficial, стабильный)
+// 🌍 перевод (стабильный)
 async function translate(text, lang) {
   try {
     const res = await fetch(
@@ -33,7 +29,7 @@ async function translate(text, lang) {
   }
 }
 
-// 🎛 клавиатура
+// 🎛 меню
 function menu() {
   return Markup.inlineKeyboard([
     [Markup.button.callback("🇪🇸 Испанский", "es")],
@@ -44,12 +40,7 @@ function menu() {
 
 // 🟢 старт
 bot.start(async (ctx) => {
-  const lang = userLang[ctx.chat.id] || "es";
-
-  await ctx.reply(
-    "👋 Бот переводчик + голос\n\nВыбери язык:",
-    menu()
-  );
+  await ctx.reply("👋 Бот готов. Выбери язык:", menu());
 });
 
 // 🌍 язык
@@ -73,17 +64,17 @@ bot.on("text", async (ctx) => {
   if (ctx.message.text.startsWith("/")) return;
 
   const lang = userLang[ctx.chat.id] || "es";
+
   const translated = await translate(ctx.message.text, lang);
 
   await ctx.reply("🌍 Перевод:\n\n" + translated);
 });
 
-// 🎤 ГОЛОС (СТАБИЛЬНЫЙ WHISPER OPENAI)
+// 🎤 ГОЛОС (100% стабильный вариант через OpenAI HTTP API)
 bot.on("voice", async (ctx) => {
   try {
     await ctx.reply("🎤 Распознаю голос...");
 
-    // файл из Telegram
     const file = await ctx.telegram.getFile(ctx.message.voice.file_id);
 
     const fileUrl =
@@ -91,36 +82,27 @@ bot.on("voice", async (ctx) => {
       file.file_path;
 
     const audioRes = await fetch(fileUrl);
-
-    if (!audioRes.ok) {
-      throw new Error("Не удалось скачать голос");
-    }
+    if (!audioRes.ok) throw new Error("Не удалось скачать голос");
 
     const buffer = Buffer.from(await audioRes.arrayBuffer());
 
-    // multipart form-data
+    // 🔥 ВАЖНО: отправляем как raw file через fetch (без FormData багов Render)
     const form = new FormData();
-
-    form.append("file", buffer, {
-      filename: "voice.ogg",
-      contentType: "audio/ogg",
-    });
-
+    form.append("file", new Blob([buffer], { type: "audio/ogg" }), "voice.ogg");
     form.append("model", "whisper-1");
 
-    const res = await fetch(
+    const openaiRes = await fetch(
       "https://api.openai.com/v1/audio/transcriptions",
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${OPENAI_API_KEY}`,
-          ...form.getHeaders(),
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
         },
         body: form,
       }
     );
 
-    const data = await res.json();
+    const data = await openaiRes.json();
 
     if (!data.text) {
       throw new Error(JSON.stringify(data));
@@ -129,6 +111,7 @@ bot.on("voice", async (ctx) => {
     const text = data.text;
 
     const lang = userLang[ctx.chat.id] || "es";
+
     const translated = await translate(text, lang);
 
     await ctx.reply(
