@@ -23,7 +23,7 @@ async function translate(text, lang) {
     const data = await res.json();
     return data?.[0]?.map((x) => x[0]).join("") || text;
   } catch {
-    return "ошибка перевода";
+    return "Ошибка перевода";
   }
 }
 
@@ -57,7 +57,7 @@ async function setLang(ctx, lang) {
 
   const m = getMenu(ctx.chat.id);
 
-  await ctx.reply("✔ язык изменён");
+  await ctx.reply("✔ Язык изменён");
   await ctx.reply(m.text, m.keyboard);
 }
 
