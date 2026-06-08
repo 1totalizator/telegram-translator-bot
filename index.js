@@ -4,7 +4,7 @@ const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
 // 🧠 память
 const userLang = {};
-const history = {}; // chatId -> [{ru, translated, lang}]
+const history = {};
 
 // 🌍 языки
 const langMap = {
@@ -30,72 +30,47 @@ async function translate(text, lang) {
   }
 }
 
-// 🔁 обратный перевод
-async function translateBack(text, fromLang) {
-  try {
-    const res = await fetch(
-      "https://translate.googleapis.com/translate_a/single?client=gtx&sl=" +
-        fromLang +
-        "&tl=ru&dt=t&q=" +
-        encodeURIComponent(text)
-    );
+// 🎛 меню
+function menu(chatId) {
+  const lang = userLang[chatId] || "es";
+  const cur = langMap[lang];
 
-    const data = await res.json();
-    return data?.[0]?.map((x) => x[0]).join("") || text;
-  } catch {
-    return "ошибка перевода";
-  }
-}
-
-// 🎛 меню языков
-function menu() {
-  return Markup.inlineKeyboard([
-    [Markup.button.callback("🇪🇸 Испанский", "es")],
-    [Markup.button.callback("🇮🇹 Итальянский", "it")],
-    [Markup.button.callback("🇩🇪 Немецкий", "de")],
-  ]);
-}
-
-// 📋 кнопки результата
-function resultButtons(chatId, text, lang) {
-  return Markup.inlineKeyboard([
-    [
-      Markup.button.callback("🔁 Обратно", `back:${chatId}`),
-      Markup.button.callback("📜 История", `history:${chatId}`),
-    ],
-  ]);
+  return {
+    text:
+      `👋 Переводчик готов\n\n` +
+      `🌍 Текущий язык: ${cur.flag} ${cur.label}\n\n` +
+      `Отправь текст ↓`,
+    keyboard: Markup.inlineKeyboard([
+      [Markup.button.callback("🇪🇸 Испанский", "es")],
+      [Markup.button.callback("🇮🇹 Итальянский", "it")],
+      [Markup.button.callback("🇩🇪 Немецкий", "de")],
+    ]),
+  };
 }
 
 // 🟢 start
 bot.start(async (ctx) => {
-  const lang = userLang[ctx.chat.id] || "es";
-  const cur = langMap[lang];
+  const m = menu(ctx.chat.id);
+  await ctx.reply(m.text, m.keyboard);
+});
+
+// 🌍 выбор языка (ВОЗВРАТ В МЕНЮ)
+async function setLang(ctx, lang) {
+  userLang[ctx.chat.id] = lang;
+
+  const m = menu(ctx.chat.id);
 
   await ctx.reply(
-    `👋 Переводчик готов
-
-🌍 Текущий язык: ${cur.flag} ${cur.label}
-
-Отправь текст ↓`,
-    menu()
+    `✔ Язык изменён`,
+    { ...m.keyboard }
   );
-});
 
-// 🌍 выбор языка
-bot.action("es", (ctx) => {
-  userLang[ctx.chat.id] = "es";
-  ctx.reply("🇪🇸 Испанский выбран");
-});
+  await ctx.reply(m.text, m.keyboard);
+}
 
-bot.action("it", (ctx) => {
-  userLang[ctx.chat.id] = "it";
-  ctx.reply("🇮🇹 Итальянский выбран");
-});
-
-bot.action("de", (ctx) => {
-  userLang[ctx.chat.id] = "de";
-  ctx.reply("🇩🇪 Немецкий выбран");
-});
+bot.action("es", (ctx) => setLang(ctx, "es"));
+bot.action("it", (ctx) => setLang(ctx, "it"));
+bot.action("de", (ctx) => setLang(ctx, "de"));
 
 // 📝 перевод
 bot.on("text", async (ctx) => {
@@ -105,52 +80,13 @@ bot.on("text", async (ctx) => {
 
   const translated = await translate(ctx.message.text, lang);
 
-  // история
   if (!history[ctx.chat.id]) history[ctx.chat.id] = [];
-  history[ctx.chat.id].push({
-    ru: ctx.message.text,
-    translated,
-    lang,
+  history[ctx.chat.id].push({ ru: ctx.message.text, translated });
+
+  // 🔥 ВАЖНО: code block = максимально удобное копирование
+  await ctx.reply("```" + translated + "```", {
+    parse_mode: "Markdown",
   });
-
-  await ctx.reply(translated, resultButtons(ctx.chat.id));
-});
-
-// 🔁 ОБРАТНЫЙ ПЕРЕВОД
-bot.action(/back:(.+)/, async (ctx) => {
-  const chatId = ctx.match[1];
-
-  const last = history[chatId]?.slice(-1)[0];
-
-  if (!last) {
-    return ctx.reply("Нет истории");
-  }
-
-  const back = await translateBack(last.translated, last.lang);
-
-  await ctx.reply(back);
-});
-
-// 📜 ИСТОРИЯ
-bot.action(/history:(.+)/, async (ctx) => {
-  const chatId = ctx.match[1];
-
-  const items = history[chatId] || [];
-
-  if (!items.length) {
-    return ctx.reply("История пуста");
-  }
-
-  const last5 = items.slice(-5).reverse();
-
-  const text = last5
-    .map(
-      (x, i) =>
-        `${i + 1}) RU: ${x.ru}\n   → ${x.translated}`
-    )
-    .join("\n\n");
-
-  await ctx.reply("📜 Последние переводы:\n\n" + text);
 });
 
 bot.launch();
