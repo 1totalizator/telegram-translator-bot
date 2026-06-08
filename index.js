@@ -2,8 +2,9 @@ import { Telegraf, Markup } from "telegraf";
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
-// 🧠 язык пользователя
+// 🧠 память
 const userLang = {};
+const history = {}; // chatId -> [{ru, translated, lang}]
 
 // 🌍 языки
 const langMap = {
@@ -29,7 +30,24 @@ async function translate(text, lang) {
   }
 }
 
-// 🎛 меню
+// 🔁 обратный перевод
+async function translateBack(text, fromLang) {
+  try {
+    const res = await fetch(
+      "https://translate.googleapis.com/translate_a/single?client=gtx&sl=" +
+        fromLang +
+        "&tl=ru&dt=t&q=" +
+        encodeURIComponent(text)
+    );
+
+    const data = await res.json();
+    return data?.[0]?.map((x) => x[0]).join("") || text;
+  } catch {
+    return "ошибка перевода";
+  }
+}
+
+// 🎛 меню языков
 function menu() {
   return Markup.inlineKeyboard([
     [Markup.button.callback("🇪🇸 Испанский", "es")],
@@ -38,24 +56,27 @@ function menu() {
   ]);
 }
 
-// 🟢 старт (УЛУЧШЕННЫЙ)
+// 📋 кнопки результата
+function resultButtons(chatId, text, lang) {
+  return Markup.inlineKeyboard([
+    [
+      Markup.button.callback("🔁 Обратно", `back:${chatId}`),
+      Markup.button.callback("📜 История", `history:${chatId}`),
+    ],
+  ]);
+}
+
+// 🟢 start
 bot.start(async (ctx) => {
   const lang = userLang[ctx.chat.id] || "es";
-
-  const current = langMap[lang];
+  const cur = langMap[lang];
 
   await ctx.reply(
-    `👋 Привет!
+    `👋 Переводчик готов
 
-Я — твой переводчик.
+🌍 Текущий язык: ${cur.flag} ${cur.label}
 
-📌 Что я умею:
-• отправь текст → получишь перевод
-• выбираешь язык кнопками ниже
-
-🌍 Текущий язык: ${current.flag} ${current.label}
-
-Выбери язык:`,
+Отправь текст ↓`,
     menu()
   );
 });
@@ -63,20 +84,20 @@ bot.start(async (ctx) => {
 // 🌍 выбор языка
 bot.action("es", (ctx) => {
   userLang[ctx.chat.id] = "es";
-  ctx.reply("🇪🇸 Язык установлен: Испанский");
+  ctx.reply("🇪🇸 Испанский выбран");
 });
 
 bot.action("it", (ctx) => {
   userLang[ctx.chat.id] = "it";
-  ctx.reply("🇮🇹 Язык установлен: Итальянский");
+  ctx.reply("🇮🇹 Итальянский выбран");
 });
 
 bot.action("de", (ctx) => {
   userLang[ctx.chat.id] = "de";
-  ctx.reply("🇩🇪 Язык установлен: Немецкий");
+  ctx.reply("🇩🇪 Немецкий выбран");
 });
 
-// 📝 текст (ЧИСТЫЙ ВЫВОД БЕЗ ЛИШНЕГО)
+// 📝 перевод
 bot.on("text", async (ctx) => {
   if (ctx.message.text.startsWith("/")) return;
 
@@ -84,8 +105,52 @@ bot.on("text", async (ctx) => {
 
   const translated = await translate(ctx.message.text, lang);
 
-  // 🔥 ВАЖНО: только текст, без "перевод:"
-  await ctx.reply(translated);
+  // история
+  if (!history[ctx.chat.id]) history[ctx.chat.id] = [];
+  history[ctx.chat.id].push({
+    ru: ctx.message.text,
+    translated,
+    lang,
+  });
+
+  await ctx.reply(translated, resultButtons(ctx.chat.id));
+});
+
+// 🔁 ОБРАТНЫЙ ПЕРЕВОД
+bot.action(/back:(.+)/, async (ctx) => {
+  const chatId = ctx.match[1];
+
+  const last = history[chatId]?.slice(-1)[0];
+
+  if (!last) {
+    return ctx.reply("Нет истории");
+  }
+
+  const back = await translateBack(last.translated, last.lang);
+
+  await ctx.reply(back);
+});
+
+// 📜 ИСТОРИЯ
+bot.action(/history:(.+)/, async (ctx) => {
+  const chatId = ctx.match[1];
+
+  const items = history[chatId] || [];
+
+  if (!items.length) {
+    return ctx.reply("История пуста");
+  }
+
+  const last5 = items.slice(-5).reverse();
+
+  const text = last5
+    .map(
+      (x, i) =>
+        `${i + 1}) RU: ${x.ru}\n   → ${x.translated}`
+    )
+    .join("\n\n");
+
+  await ctx.reply("📜 Последние переводы:\n\n" + text);
 });
 
 bot.launch();
