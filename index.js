@@ -15,7 +15,7 @@ const langMap = {
   de: { label: "Немецкий", flag: "🇩🇪" },
 };
 
-// 🌍 перевод (стабильный бесплатный)
+// 🌍 перевод (стабильный Google endpoint)
 async function translate(text, targetLang = "es") {
   try {
     const res = await fetch(
@@ -40,11 +40,10 @@ function menu(chatId) {
     [Markup.button.callback("🇪🇸 Испанский", "es")],
     [Markup.button.callback("🇮🇹 Итальянский", "it")],
     [Markup.button.callback("🇩🇪 Немецкий", "de")],
-    [Markup.button.callback("🎤 Голос (эксперимент)", "voice_info")],
   ]);
 }
 
-// 🟢 start
+// 🟢 старт
 bot.start(async (ctx) => {
   const chatId = ctx.chat.id;
   const lang = userLang[chatId] || "es";
@@ -60,7 +59,7 @@ bot.start(async (ctx) => {
   );
 });
 
-// 🌍 язык
+// 🌍 выбор языка
 bot.action("es", async (ctx) => {
   userLang[ctx.chat.id] = "es";
   await ctx.reply("🇪🇸 Испанский выбран");
@@ -76,15 +75,6 @@ bot.action("de", async (ctx) => {
   await ctx.reply("🇩🇪 Немецкий выбран");
 });
 
-// 🎤 голос (без API — просто заглушка)
-bot.action("voice_info", async (ctx) => {
-  await ctx.reply(
-    "🎤 Голос сейчас в бесплатном режиме работает ограниченно.\n\n" +
-      "👉 Чтобы он реально распознавал речь стабильно — нужен API ключ (объясню дальше)\n\n" +
-      "Пока отправь голосовое — я просто покажу текстовый файл Telegram (без распознавания)."
-  );
-});
-
 // 📝 текст → перевод
 bot.on("text", async (ctx) => {
   const text = ctx.message.text;
@@ -97,11 +87,45 @@ bot.on("text", async (ctx) => {
   await ctx.reply("🌍 Перевод:\n\n" + translated);
 });
 
-// 🎤 голос (Telegram voice → пока просто уведомление)
+// 🎤 голос → текст → перевод
 bot.on("voice", async (ctx) => {
-  await ctx.reply(
-    "🎤 Голос получен.\n\n⚠️ Распознавание речи требует подключения сервиса.\nСейчас бот получает файл, но не может его расшифровать без API."
-  );
+  try {
+    const file = await ctx.telegram.getFile(ctx.message.voice.file_id);
+
+    const fileUrl =
+      `https://api.telegram.org/file/bot${TOKEN}/` +
+      file.file_path;
+
+    await ctx.reply("🎤 Распознаю голос...");
+
+    const audioRes = await fetch(fileUrl);
+    const buffer = await audioRes.arrayBuffer();
+
+    const form = new FormData();
+    form.append("file", new Blob([buffer], { type: "audio/ogg" }));
+
+    const res = await fetch("https://whisper.jonex.ai/asr", {
+      method: "POST",
+      body: form,
+    });
+
+    const data = await res.json();
+
+    const text = data?.text || "не удалось распознать речь";
+
+    const lang = userLang[ctx.chat.id] || "es";
+
+    const translated = await translate(text, lang);
+
+    await ctx.reply(
+      "📝 Текст:\n" +
+        text +
+        "\n\n🌍 Перевод:\n" +
+        translated
+    );
+  } catch (e) {
+    await ctx.reply("Ошибка голосового: " + String(e));
+  }
 });
 
 // 🚀 запуск
