@@ -4,6 +4,7 @@
   "main": "index.js",
   "type": "module",
   "dependencies": {
+    "openai": "^4.0.0"
     "telegraf": "^4.16.3"
   },
   "scripts": {
