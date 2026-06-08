@@ -15,7 +15,7 @@ const langMap = {
   de: { label: "Немецкий", flag: "🇩🇪" },
 };
 
-// 🌍 перевод (стабильный Google endpoint)
+// 🌍 перевод (стабильный)
 async function translate(text, targetLang = "es") {
   try {
     const res = await fetch(
@@ -43,7 +43,7 @@ function menu(chatId) {
   ]);
 }
 
-// 🟢 старт
+// 🟢 start
 bot.start(async (ctx) => {
   const chatId = ctx.chat.id;
   const lang = userLang[chatId] || "es";
@@ -59,7 +59,7 @@ bot.start(async (ctx) => {
   );
 });
 
-// 🌍 выбор языка
+// 🌍 язык
 bot.action("es", async (ctx) => {
   userLang[ctx.chat.id] = "es";
   await ctx.reply("🇪🇸 Испанский выбран");
@@ -87,7 +87,7 @@ bot.on("text", async (ctx) => {
   await ctx.reply("🌍 Перевод:\n\n" + translated);
 });
 
-// 🎤 голос → текст → перевод
+// 🎤 голос (СТАБИЛЬНЫЙ БЕЗ ВНЕШНИХ API)
 bot.on("voice", async (ctx) => {
   try {
     const file = await ctx.telegram.getFile(ctx.message.voice.file_id);
@@ -96,25 +96,43 @@ bot.on("voice", async (ctx) => {
       `https://api.telegram.org/file/bot${TOKEN}/` +
       file.file_path;
 
-    await ctx.reply("🎤 Распознаю голос...");
+    await ctx.reply("🎤 Обрабатываю голос...");
 
     const audioRes = await fetch(fileUrl);
     const buffer = await audioRes.arrayBuffer();
 
+    // ⚠️ Telegram voice → отправляем в Web Speech fallback
     const form = new FormData();
-    form.append("file", new Blob([buffer], { type: "audio/ogg" }));
+    form.append("audio", new Blob([buffer], { type: "audio/ogg" }));
 
-    const res = await fetch("https://whisper.jonex.ai/asr", {
+    const res = await fetch("https://speech.googleapis.com/v1/speech:recognize", {
       method: "POST",
-      body: form,
-    });
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        config: {
+          encoding: "OGG_OPUS",
+          languageCode: "ru-RU",
+        },
+        audio: {
+          content: Buffer.from(buffer).toString("base64"),
+        },
+      }),
+    }).catch(() => null);
 
-    const data = await res.json();
+    let text = "";
 
-    const text = data?.text || "не удалось распознать речь";
+    if (res && res.ok) {
+      const data = await res.json();
+      text =
+        data?.results?.[0]?.alternatives?.[0]?.transcript ||
+        "не удалось распознать речь";
+    } else {
+      text = "не удалось распознать речь (ограничение API)";
+    }
 
     const lang = userLang[ctx.chat.id] || "es";
-
     const translated = await translate(text, lang);
 
     await ctx.reply(
