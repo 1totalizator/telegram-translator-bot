@@ -1,12 +1,8 @@
 import { Telegraf, Markup } from "telegraf";
+import OpenAI from "openai";
 
-const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
-
-if (!TOKEN) throw new Error("TELEGRAM_BOT_TOKEN is required");
-if (!GROQ_API_KEY) throw new Error("GROQ_API_KEY is required");
-
-const bot = new Telegraf(TOKEN);
+const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // 🧠 память языка
 const userLang = {};
@@ -18,30 +14,27 @@ const langMap = {
   de: { label: "Немецкий", flag: "🇩🇪" },
 };
 
-// 🌍 перевод
-async function translate(text, targetLang = "es") {
+// 🌍 перевод через GPT (стабильно)
+async function translate(text, lang) {
   try {
-    const res = await fetch(
-      "https://translate.googleapis.com/translate_a/single?client=gtx&sl=ru&tl=" +
-        targetLang +
-        "&dt=t&q=" +
-        encodeURIComponent(text)
-    );
+    const res = await openai.responses.create({
+      model: "gpt-4.1-mini",
+      input: `Переведи на ${lang}:\n\n${text}`,
+    });
 
-    const data = await res.json();
-    return data?.[0]?.map((x) => x[0]).join("") || "ошибка перевода";
+    return res.output_text || "ошибка перевода";
   } catch (e) {
-    return "ошибка API: " + String(e);
+    return "ошибка перевода: " + String(e);
   }
 }
 
-// 🎛 меню (КНОПКА ВОЗВРАЩЕНА)
-function menu(chatId) {
+// 🎛 меню
+function menu() {
   return Markup.inlineKeyboard([
     [Markup.button.callback("🇪🇸 Испанский", "es")],
     [Markup.button.callback("🇮🇹 Итальянский", "it")],
     [Markup.button.callback("🇩🇪 Немецкий", "de")],
-    [Markup.button.callback("🎤 Голосовой режим", "voice_mode")],
+    [Markup.button.callback("🎤 Голос", "voice")],
   ]);
 }
 
@@ -50,13 +43,8 @@ bot.start(async (ctx) => {
   const lang = userLang[ctx.chat.id] || "es";
 
   await ctx.reply(
-    "👋 Привет!\n\n" +
-      "🌍 Текущий язык: " +
-      langMap[lang].flag +
-      " " +
-      langMap[lang].label +
-      "\n\nВыбери язык 👇",
-    menu(ctx.chat.id)
+    `👋 Привет!\n\n🌍 Язык: ${lang}`,
+    menu()
   );
 });
 
@@ -76,64 +64,41 @@ bot.action("de", (ctx) => {
   ctx.reply("🇩🇪 Немецкий выбран");
 });
 
-// 🎤 включение режима
-bot.action("voice_mode", async (ctx) => {
-  ctx.reply("🎤 Отправь голосовое сообщение — я распознаю и переведу");
-});
-
 // 📝 текст
 bot.on("text", async (ctx) => {
-  const text = ctx.message.text;
-  if (text.startsWith("/")) return;
+  if (ctx.message.text.startsWith("/")) return;
 
   const lang = userLang[ctx.chat.id] || "es";
+  const result = await translate(ctx.message.text, lang);
 
-  const translated = await translate(text, lang);
-
-  ctx.reply("🌍 Перевод:\n\n" + translated);
+  ctx.reply("🌍 Перевод:\n\n" + result);
 });
 
-// 🎤 ГОЛОС (РЕАЛЬНО РАБОЧИЙ)
+// 🎤 ГОЛОС (СТАБИЛЬНЫЙ OPENAI WHISPER)
 bot.on("voice", async (ctx) => {
   try {
-    const file = await ctx.telegram.getFile(ctx.message.voice.file_id);
-
-    const fileUrl =
-      `https://api.telegram.org/file/bot${TOKEN}/` +
-      file.file_path;
-
     await ctx.reply("🎤 Распознаю голос...");
 
+    const file = await ctx.telegram.getFile(ctx.message.voice.file_id);
+    const fileUrl =
+      `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/` +
+      file.file_path;
+
     const audio = await fetch(fileUrl);
-    const buffer = await audio.arrayBuffer();
+    const buffer = Buffer.from(await audio.arrayBuffer());
 
-    const base64 = Buffer.from(buffer).toString("base64");
-
-    const res = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${GROQ_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        file: base64,
-        model: "whisper-large-v3",
-        response_format: "json"
-      }),
+    const transcription = await openai.audio.transcriptions.create({
+      file: new File([buffer], "voice.ogg", { type: "audio/ogg" }),
+      model: "whisper-1",
     });
 
-    const data = await res.json();
-
-    const text = data?.text || "не удалось распознать речь";
+    const text = transcription.text;
 
     const lang = userLang[ctx.chat.id] || "es";
     const translated = await translate(text, lang);
 
     ctx.reply(
-      "📝 Текст:\n" +
-        text +
-        "\n\n🌍 Перевод:\n" +
-        translated
+      `📝 Текст:\n${text}\n\n🌍 Перевод:\n${translated}`
     );
   } catch (e) {
     ctx.reply("Ошибка голосового: " + String(e));
