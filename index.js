@@ -1,64 +1,52 @@
 import { Telegraf, Markup } from "telegraf";
-import axios from "axios";
-import fs from "fs";
-import path from "path";
+import http from "http";
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
 const userLang = {};
 const history = {};
 
-// ---------------- LANGS ----------------
 const langMap = {
   es: { label: "Испанский", flag: "🇪🇸" },
   it: { label: "Итальянский", flag: "🇮🇹" },
-  de: { label: "Немецкий", flag: "🇩🇪" }
+  de: { label: "Немецкий", flag: "🇩🇪" },
 };
 
-// ---------------- TRANSLATE ----------------
+// 🌍 перевод RU -> LANG
 async function translate(text, lang) {
   try {
-    const res = await axios.get(
-      "https://translate.googleapis.com/translate_a/single",
-      {
-        params: {
-          client: "gtx",
-          sl: "ru",
-          tl: lang,
-          dt: "t",
-          q: text
-        }
-      }
+    const res = await fetch(
+      "https://translate.googleapis.com/translate_a/single?client=gtx&sl=ru&tl=" +
+        lang +
+        "&dt=t&q=" +
+        encodeURIComponent(text)
     );
 
-    return res.data?.[0]?.map(x => x[0]).join("") || text;
+    const data = await res.json();
+    return data?.[0]?.map((x) => x[0]).join("") || text;
   } catch {
     return "ошибка перевода";
   }
 }
 
+// 🌍 обратный перевод
 async function translateBack(text, lang) {
   try {
-    const res = await axios.get(
-      "https://translate.googleapis.com/translate_a/single",
-      {
-        params: {
-          client: "gtx",
-          sl: lang,
-          tl: "ru",
-          dt: "t",
-          q: text
-        }
-      }
+    const res = await fetch(
+      "https://translate.googleapis.com/translate_a/single?client=gtx&sl=" +
+        lang +
+        "&tl=ru&dt=t&q=" +
+        encodeURIComponent(text)
     );
 
-    return res.data?.[0]?.map(x => x[0]).join("") || text;
+    const data = await res.json();
+    return data?.[0]?.map((x) => x[0]).join("") || text;
   } catch {
-    return "ошибка перевода";
+    return "Ошибка перевода";
   }
 }
 
-// ---------------- MENU ----------------
+// 🎛 меню
 function getMenu(chatId) {
   const lang = userLang[chatId] || "es";
   const cur = langMap[lang];
@@ -66,108 +54,28 @@ function getMenu(chatId) {
   return {
     text:
       `👋 Переводчик\n\n` +
-      `🌍 Язык: ${cur.flag} ${cur.label}\n\n` +
-      `Отправь текст или голос`,
+      `🌍 Текущий язык: ${cur.flag} ${cur.label}\n\n` +
+      `Отправь текст или голос ↓`,
     keyboard: Markup.inlineKeyboard([
       [Markup.button.callback("🇪🇸 Испанский", "es")],
       [Markup.button.callback("🇮🇹 Итальянский", "it")],
-      [Markup.button.callback("🇩🇪 Немецкий", "de")]
-    ])
+      [Markup.button.callback("🇩🇪 Немецкий", "de")],
+    ]),
   };
 }
 
-// ---------------- HISTORY ----------------
-function saveHistory(chatId, ru, translated, lang) {
-  if (!history[chatId]) history[chatId] = [];
-  history[chatId].push({ ru, translated, lang });
-}
-
-// ---------------- VOICE DOWNLOAD ----------------
-async function downloadVoice(ctx) {
-  const fileId = ctx.message.voice.file_id;
-  const file = await ctx.telegram.getFile(fileId);
-  const url = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
-
-  const filePath = path.resolve("./voice.ogg");
-  const writer = fs.createWriteStream(filePath);
-
-  const response = await axios({ url, method: "GET", responseType: "stream" });
-  response.data.pipe(writer);
-
-  return new Promise((resolve, reject) => {
-    writer.on("finish", () => resolve(filePath));
-    writer.on("error", reject);
-  });
-}
-
-// ---------------- SIMPLE FREE ASR ----------------
-// ВАЖНО: это НЕ идеал, но стабильно
-async function speechToText(filePath) {
-  try {
-    const form = new FormData();
-    form.append("file", fs.createReadStream(filePath));
-
-    const res = await axios.post(
-      "https://api.assemblyai.com/v2/upload",
-      fs.createReadStream(filePath),
-      {
-        headers: {
-          authorization: process.env.ASSEMBLYAI_KEY,
-          "content-type": "application/octet-stream"
-        }
-      }
-    );
-
-    const uploadUrl = res.data.upload_url;
-
-    const transcript = await axios.post(
-      "https://api.assemblyai.com/v2/transcript",
-      {
-        audio_url: uploadUrl
-      },
-      {
-        headers: {
-          authorization: process.env.ASSEMBLYAI_KEY
-        }
-      }
-    );
-
-    const id = transcript.data.id;
-
-    // polling
-    while (true) {
-      const poll = await axios.get(
-        `https://api.assemblyai.com/v2/transcript/${id}`,
-        {
-          headers: {
-            authorization: process.env.ASSEMBLYAI_KEY
-          }
-        }
-      );
-
-      if (poll.data.status === "completed") return poll.data.text;
-      if (poll.data.status === "error") return null;
-
-      await new Promise(r => setTimeout(r, 2000));
-    }
-  } catch (e) {
-    console.log(e);
-    return null;
-  }
-}
-
-// ---------------- START ----------------
+// 🟢 старт
 bot.start(async (ctx) => {
   const m = getMenu(ctx.chat.id);
   await ctx.reply(m.text, m.keyboard);
 });
 
-// ---------------- LANG ----------------
+// 🌍 язык
 async function setLang(ctx, lang) {
   userLang[ctx.chat.id] = lang;
   const m = getMenu(ctx.chat.id);
 
-  await ctx.reply("✔ язык изменён");
+  await ctx.reply("✔ Язык изменён");
   await ctx.reply(m.text, m.keyboard);
 }
 
@@ -175,85 +83,95 @@ bot.action("es", (ctx) => setLang(ctx, "es"));
 bot.action("it", (ctx) => setLang(ctx, "it"));
 bot.action("de", (ctx) => setLang(ctx, "de"));
 
-// ---------------- TEXT ----------------
+// 🧠 история
+function saveHistory(chatId, ru, translated, lang) {
+  if (!history[chatId]) history[chatId] = [];
+  history[chatId].push({ ru, translated, lang });
+}
+
+// 📝 текст
 bot.on("text", async (ctx) => {
-  if (ctx.message.text.startsWith("/")) return;
-
-  const lang = userLang[ctx.chat.id] || "es";
-  const translated = await translate(ctx.message.text, lang);
-
-  saveHistory(ctx.chat.id, ctx.message.text, translated, lang);
-
-  await ctx.reply(`\`${translated}\``, {
-    parse_mode: "Markdown",
-    reply_markup: Markup.inlineKeyboard([
-      [
-        Markup.button.callback("🔁 Обратно", "back"),
-        Markup.button.callback("📜 История", "history")
-      ]
-    ]).reply_markup
-  });
-});
-
-// ---------------- VOICE ----------------
-bot.on("voice", async (ctx) => {
   try {
-    await ctx.reply("⏳ Обрабатываю голос...");
-
-    const filePath = await downloadVoice(ctx);
-    const text = await speechToText(filePath);
-
-    if (!text) {
-      return ctx.reply("❌ Не удалось распознать голос");
-    }
+    if (ctx.message.text.startsWith("/")) return;
 
     const lang = userLang[ctx.chat.id] || "es";
-    const translated = await translate(text, lang);
+    const translated = await translate(ctx.message.text, lang);
 
-    saveHistory(ctx.chat.id, text, translated, lang);
+    saveHistory(ctx.chat.id, ctx.message.text, translated, lang);
 
-    await ctx.reply(`🎤 ${text}\n\n\`${translated}\``, {
+    await ctx.reply("`" + translated + "`", {
       parse_mode: "Markdown",
       reply_markup: Markup.inlineKeyboard([
         [
           Markup.button.callback("🔁 Обратно", "back"),
-          Markup.button.callback("📜 История", "history")
-        ]
-      ]).reply_markup
+          Markup.button.callback("📜 История", "history"),
+        ],
+      ]).reply_markup,
     });
   } catch (e) {
-    console.log(e);
-    ctx.reply("❌ ошибка голосового");
+    console.log("text error:", e);
   }
 });
 
-// ---------------- BACK ----------------
+// 🎤 голос (заглушка, чтобы не падал)
+bot.on("voice", async (ctx) => {
+  try {
+    await ctx.reply("🎤 Голос получен, распознавание пока отключено.");
+  } catch (e) {
+    console.log(e);
+  }
+});
+
+// 🔁 back
 bot.action("back", async (ctx) => {
-  const chatId = ctx.chat.id;
-  const last = history[chatId]?.slice(-1)[0];
+  try {
+    const chatId = ctx.chat.id;
+    const last = history[chatId]?.slice(-1)[0];
+    if (!last) return ctx.reply("Нет истории");
 
-  if (!last) return ctx.reply("нет истории");
+    const back = await translateBack(last.translated, last.lang);
 
-  const back = await translateBack(last.translated, last.lang);
-
-  await ctx.reply(`\`${back}\``, { parse_mode: "Markdown" });
+    await ctx.reply("`" + back + "`", {
+      parse_mode: "Markdown",
+    });
+  } catch (e) {
+    console.log(e);
+  }
 });
 
-// ---------------- HISTORY ----------------
+// 📜 history
 bot.action("history", async (ctx) => {
-  const chatId = ctx.chat.id;
-  const items = history[chatId] || [];
+  try {
+    const chatId = ctx.chat.id;
+    const items = history[chatId] || [];
 
-  if (!items.length) return ctx.reply("история пустая");
+    if (!items.length) return ctx.reply("История пуста");
 
-  const text = items
-    .slice(-5)
-    .reverse()
-    .map((x, i) => `${i + 1}) ${x.ru} → ${x.translated}`)
-    .join("\n\n");
+    const text = items
+      .slice(-5)
+      .reverse()
+      .map((x, i) => `${i + 1}) ${x.ru} → ${x.translated}`)
+      .join("\n\n");
 
-  await ctx.reply(text);
+    await ctx.reply(text);
+  } catch (e) {
+    console.log(e);
+  }
 });
 
+// 🚀 HTTP SERVER (ВОТ ЭТО ТВОЙ “КОСТЫЛЬ”, НО ПРАВИЛЬНЫЙ)
+const PORT = process.env.PORT || 3000;
+
+http
+  .createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("Bot is running");
+  })
+  .listen(PORT, () => {
+    console.log("HTTP server running on port", PORT);
+  });
+
+// 🚀 BOT START
 bot.launch();
+
 console.log("Bot started");
