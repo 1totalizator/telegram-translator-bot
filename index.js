@@ -1,4 +1,13 @@
+import http from "http";
 import { Telegraf, Markup } from "telegraf";
+
+// ✅ КОСТЫЛЬ ДЛЯ RENDER (обязательно, иначе бот будет падать)
+http
+  .createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("Bot is running");
+  })
+  .listen(process.env.PORT || 3000);
 
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
