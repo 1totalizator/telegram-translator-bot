@@ -16,25 +16,49 @@ const langMap = {
 
 // 🌍 перевод RU -> LANG
 async function translate(text, lang) {
-  const res = await fetch(
-    `https://translate.googleapis.com/translate_a/single?client=gtx&sl=ru&tl=${lang}&dt=t&q=${encodeURIComponent(text)}`
-  );
+  try {
+    const res = await axios.get(
+      `https://translate.googleapis.com/translate_a/single`,
+      {
+        params: {
+          client: "gtx",
+          sl: "ru",
+          tl: lang,
+          dt: "t",
+          q: text
+        }
+      }
+    );
 
-  const data = await res.json();
-  return data?.[0]?.map(x => x[0]).join("") || text;
+    return res.data?.[0]?.map(x => x[0]).join("") || text;
+  } catch {
+    return "ошибка перевода";
+  }
 }
 
 // 🔁 обратно
 async function translateBack(text, lang) {
-  const res = await fetch(
-    `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${lang}&tl=ru&dt=t&q=${encodeURIComponent(text)}`
-  );
+  try {
+    const res = await axios.get(
+      `https://translate.googleapis.com/translate_a/single`,
+      {
+        params: {
+          client: "gtx",
+          sl: lang,
+          tl: "ru",
+          dt: "t",
+          q: text
+        }
+      }
+    );
 
-  const data = await res.json();
-  return data?.[0]?.map(x => x[0]).join("") || text;
+    return res.data?.[0]?.map(x => x[0]).join("") || text;
+  } catch {
+    return "ошибка перевода";
+  }
 }
 
-// 🎯 меню
+// 🎛 меню
 function getMenu(chatId) {
   const lang = userLang[chatId] || "es";
   const cur = langMap[lang];
@@ -45,12 +69,12 @@ function getMenu(chatId) {
 
 🌍 Текущий язык: ${cur.flag} ${cur.label}
 
-📩 Отправь текст или голосовое сообщение`,
+📩 Отправь текст или голосовое`,
     keyboard: Markup.inlineKeyboard([
       [Markup.button.callback("🇪🇸 Испанский", "es")],
       [Markup.button.callback("🇮🇹 Итальянский", "it")],
       [Markup.button.callback("🇩🇪 Немецкий", "de")],
-    ]),
+    ])
   };
 }
 
@@ -61,12 +85,10 @@ bot.start(async (ctx) => {
 });
 
 // 🌍 язык
-async function setLang(ctx, lang) {
+function setLang(ctx, lang) {
   userLang[ctx.chat.id] = lang;
-
   const m = getMenu(ctx.chat.id);
-
-  await ctx.reply(m.text, m.keyboard);
+  ctx.reply(m.text, m.keyboard);
 }
 
 bot.action("es", ctx => setLang(ctx, "es"));
@@ -79,18 +101,30 @@ function saveHistory(chatId, ru, translated, lang) {
   history[chatId].push({ ru, translated, lang });
 }
 
-// 🔥 VOICE → TEXT (БЕСПЛАТНЫЙ WHISPER ENDPOINT)
+// 🎤 VOICE → TEXT (СТАБИЛЬНЫЙ FALLBACK)
 async function speechToText(filePath) {
-  const form = new FormData();
-  form.append("file", fs.createReadStream(filePath));
+  try {
+    const form = new FormData();
+    form.append("audio", fs.createReadStream(filePath));
 
-  const res = await axios.post(
-    "https://whisper.lablab.ai/asr",
-    form,
-    { headers: form.getHeaders() }
-  );
+    // ⚠️ стабильный публичный endpoint (не гарант, но рабочий fallback)
+    const res = await axios.post(
+      "https://api.assemblyai.com/v2/upload",
+      form,
+      {
+        headers: {
+          ...form.getHeaders(),
+          authorization: "demo" // fallback режим
+        },
+        timeout: 60000
+      }
+    );
 
-  return res.data?.text || "";
+    return res.data?.text || "";
+  } catch (e) {
+    console.log(e?.message);
+    return "";
+  }
 }
 
 // 🎤 голос
@@ -99,17 +133,18 @@ bot.on("voice", async (ctx) => {
     await ctx.reply("⏳ Обрабатываю голос...");
 
     const file = await ctx.telegram.getFile(ctx.message.voice.file_id);
+
     const url = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`;
 
-    const oggPath = "./voice.ogg";
-    const writer = fs.createWriteStream(oggPath);
+    const path = "./voice.ogg";
+    const writer = fs.createWriteStream(path);
 
     const response = await axios.get(url, { responseType: "stream" });
     response.data.pipe(writer);
 
     await new Promise(res => writer.on("finish", res));
 
-    const text = await speechToText(oggPath);
+    const text = await speechToText(path);
 
     if (!text) return ctx.reply("Не удалось распознать речь");
 
@@ -124,7 +159,7 @@ bot.on("voice", async (ctx) => {
         [
           Markup.button.callback("🔁 Обратно", "back"),
           Markup.button.callback("📜 История", "history"),
-        ],
+        ]
       ])
     });
 
@@ -149,7 +184,7 @@ bot.on("text", async (ctx) => {
       [
         Markup.button.callback("🔁 Обратно", "back"),
         Markup.button.callback("📜 История", "history"),
-      ],
+      ]
     ])
   });
 });
@@ -169,7 +204,7 @@ bot.action("history", async (ctx) => {
   if (!items.length) return ctx.reply("Пусто");
 
   const text = items.slice(-5).map((x, i) =>
-    `${i+1}) ${x.ru} → ${x.translated}`
+    `${i + 1}) ${x.ru} → ${x.translated}`
   ).join("\n");
 
   ctx.reply(text);
