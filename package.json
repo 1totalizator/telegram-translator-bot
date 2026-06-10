@@ -6,10 +6,11 @@
   "scripts": {
     "start": "node index.js"
   },
+  "engines": {
+    "node": "18.x"
+  },
   "dependencies": {
     "telegraf": "^4.16.3",
-    "form-data": "^4.0.0",
-    "openai": "^4.0.0",
     "vosk": "^0.3.39",
     "ffmpeg-static": "^5.2.0"
   }
