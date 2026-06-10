@@ -1,5 +1,5 @@
 {
-  "name": "telegram-voice-translator-bot",
+  "name": "telegram-translator-bot",
   "version": "1.0.0",
   "main": "index.js",
   "type": "module",
