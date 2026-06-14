@@ -1,107 +1,143 @@
 import { Telegraf, Markup } from "telegraf";
-import axios from "axios";
-import express from "express";
 
-const BOT_TOKEN = process.env.BOT_TOKEN;
+const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
 
-if (!BOT_TOKEN) {
-  console.error("BOT_TOKEN missing");
-  process.exit(1);
-}
+// ====== STATE ======
+const userLang = {};
+const history = {};
 
-const bot = new Telegraf(BOT_TOKEN);
+// ====== LANGS ======
+const langMap = {
+  es: { label: "Испанский", flag: "🇪🇸" },
+  it: { label: "Итальянский", flag: "🇮🇹" },
+  de: { label: "Немецкий", flag: "🇩🇪" }
+};
 
-// ===== KEEP ALIVE =====
-const app = express();
-app.get("/", (req, res) => res.send("OK"));
-app.listen(process.env.PORT || 3000, () => {
-  console.log("HTTP server running");
-});
-
-// ===== LANG STATE (простая память) =====
-const userLang = new Map();
-
-// ===== LANG BUTTONS =====
-const langKeyboard = Markup.inlineKeyboard([
-  [
-    Markup.button.callback("🇬🇧 EN", "lang_en"),
-    Markup.button.callback("🇷🇺 RU", "lang_ru")
-  ],
-  [
-    Markup.button.callback("🇺🇦 UA", "lang_uk"),
-    Markup.button.callback("🇪🇸 ES", "lang_es")
-  ]
-]);
-
-// ===== TRANSLATE =====
-async function translate(text, target) {
+// ====== TRANSLATE ======
+async function translate(text, lang) {
   try {
-    const res = await axios.post("https://libretranslate.de/translate", {
-      q: text,
-      source: "auto",
-      target,
-      format: "text"
-    });
+    const res = await fetch(
+      `https://translate.googleapis.com/translate_a/single?client=gtx&sl=ru&tl=${lang}&dt=t&q=${encodeURIComponent(text)}`
+    );
 
-    return res.data.translatedText || text;
+    const data = await res.json();
+    return data?.[0]?.map(x => x[0]).join("") || text;
   } catch (e) {
-    console.log("translate error:", e.message);
-    return text; // никогда не падаем
+    console.log("translate error:", e);
+    return "ошибка перевода";
   }
 }
 
-// ===== START =====
+// ====== BACK TRANSLATE ======
+async function translateBack(text, lang) {
+  try {
+    const res = await fetch(
+      `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${lang}&tl=ru&dt=t&q=${encodeURIComponent(text)}`
+    );
+
+    const data = await res.json();
+    return data?.[0]?.map(x => x[0]).join("") || text;
+  } catch (e) {
+    console.log("back translate error:", e);
+    return "ошибка перевода";
+  }
+}
+
+// ====== MENU ======
+function getMenu(chatId) {
+  const lang = userLang[chatId] || "es";
+  const cur = langMap[lang];
+
+  return {
+    text:
+      `👋 Переводчик готов\n\n` +
+      `🌍 Текущий язык: ${cur.flag} ${cur.label}\n\n` +
+      `Отправь текст для перевода`,
+    keyboard: Markup.inlineKeyboard([
+      [Markup.button.callback("🇪🇸 Испанский", "lang_es")],
+      [Markup.button.callback("🇮🇹 Итальянский", "lang_it")],
+      [Markup.button.callback("🇩🇪 Немецкий", "lang_de")]
+    ])
+  };
+}
+
+// ====== START ======
 bot.start(async (ctx) => {
-  userLang.set(ctx.from.id, "en");
-
-  await ctx.reply(
-    "Выбери язык перевода:",
-    langKeyboard
-  );
+  const m = getMenu(ctx.chat.id);
+  await ctx.reply(m.text, m.keyboard);
 });
 
-// ===== LANGUAGE HANDLERS =====
-bot.action("lang_en", async (ctx) => {
-  userLang.set(ctx.from.id, "en");
-  await ctx.answerCbQuery();
-  await ctx.reply("Язык: English");
-});
+// ====== SET LANGUAGE ======
+async function setLang(ctx, lang) {
+  userLang[ctx.chat.id] = lang;
 
-bot.action("lang_ru", async (ctx) => {
-  userLang.set(ctx.from.id, "ru");
-  await ctx.answerCbQuery();
-  await ctx.reply("Язык: Русский");
-});
+  const m = getMenu(ctx.chat.id);
 
-bot.action("lang_uk", async (ctx) => {
-  userLang.set(ctx.from.id, "uk");
-  await ctx.answerCbQuery();
-  await ctx.reply("Язык: Українська");
-});
+  await ctx.reply("✔ язык изменён");
+  await ctx.reply(m.text, m.keyboard);
+}
 
-bot.action("lang_es", async (ctx) => {
-  userLang.set(ctx.from.id, "es");
-  await ctx.answerCbQuery();
-  await ctx.reply("Язык: Español");
-});
+bot.action("lang_es", ctx => setLang(ctx, "es"));
+bot.action("lang_it", ctx => setLang(ctx, "it"));
+bot.action("lang_de", ctx => setLang(ctx, "de"));
 
-// ===== TEXT HANDLER =====
+// ====== HISTORY ======
+function saveHistory(chatId, ru, translated, lang) {
+  if (!history[chatId]) history[chatId] = [];
+  history[chatId].push({ ru, translated, lang });
+}
+
+// ====== TEXT HANDLER ======
 bot.on("text", async (ctx) => {
-  const target = userLang.get(ctx.from.id) || "en";
-  const text = ctx.message.text;
+  if (!ctx.message?.text || ctx.message.text.startsWith("/")) return;
 
-  const translated = await translate(text, target);
+  const lang = userLang[ctx.chat.id] || "es";
 
-  await ctx.reply(translated);
+  const translated = await translate(ctx.message.text, lang);
+
+  saveHistory(ctx.chat.id, ctx.message.text, translated, lang);
+
+  const formatted = `\`${translated}\``;
+
+  await ctx.reply(formatted, {
+    parse_mode: "Markdown",
+    reply_markup: Markup.inlineKeyboard([
+      [
+        Markup.button.callback("🔁 Обратно", "back"),
+        Markup.button.callback("📜 История", "history")
+      ]
+    ]).reply_markup
+  });
 });
 
-// ===== SAFE LAUNCH =====
-bot.launch({
-  dropPendingUpdates: true
-}).then(() => {
-  console.log("Bot started");
+// ====== BACK TRANSLATE ======
+bot.action("back", async (ctx) => {
+  const chatId = ctx.chat.id;
+  const last = history[chatId]?.slice(-1)[0];
+
+  if (!last) return ctx.reply("нет истории");
+
+  const back = await translateBack(last.translated, last.lang);
+
+  await ctx.reply(`\`${back}\``, { parse_mode: "Markdown" });
 });
 
-// ===== STOP =====
-process.once("SIGINT", () => bot.stop("SIGINT"));
-process.once("SIGTERM", () => bot.stop("SIGTERM"));
+// ====== HISTORY ======
+bot.action("history", async (ctx) => {
+  const chatId = ctx.chat.id;
+  const items = history[chatId] || [];
+
+  if (!items.length) return ctx.reply("история пуста");
+
+  const last = items.slice(-5).reverse();
+
+  const text = last
+    .map((x, i) => `${i + 1}) ${x.ru} → ${x.translated}`)
+    .join("\n\n");
+
+  await ctx.reply(text);
+});
+
+// ====== START BOT ======
+bot.launch();
+console.log("Bot started");
