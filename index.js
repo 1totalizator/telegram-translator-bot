@@ -1,128 +1,114 @@
-import 'dotenv/config';
-import { Telegraf } from 'telegraf';
-import axios from 'axios';
-import http from 'http';
-import fs from 'fs';
+import { Telegraf } from "telegraf";
+import axios from "axios";
+import http from "http";
+import fs from "fs";
+import path from "path";
+import os from "os";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const NLP_API_KEY = process.env.NLP_API_KEY;
 
+// --- защита от кривого запуска ---
 if (!BOT_TOKEN) {
-  throw new Error('BOT_TOKEN is missing');
+  console.error("BOT_TOKEN is missing");
+  process.exit(1);
+}
+
+if (!NLP_API_KEY) {
+  console.error("NLP_API_KEY is missing");
+  process.exit(1);
 }
 
 const bot = new Telegraf(BOT_TOKEN);
 
-/* =========================
-   КОСТЫЛЬ ДЛЯ RENDER (KEEP ALIVE)
-========================= */
-http.createServer((req, res) => {
-  res.writeHead(200);
-  res.end("Bot is running");
-}).listen(process.env.PORT || 3000);
+// --- KEEP ALIVE SERVER (Render fix) ---
+http
+  .createServer((req, res) => {
+    res.writeHead(200);
+    res.end("OK");
+  })
+  .listen(process.env.PORT || 3000, () => {
+    console.log("HTTP server running");
+  });
 
-/* =========================
-   ЗАГРУЗКА ГОЛОСА ИЗ TELEGRAM
-========================= */
-async function downloadFile(fileId) {
-  const file = await bot.telegram.getFile(fileId);
-  const url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
+// --- start ---
+bot.start((ctx) => {
+  ctx.reply("Бот работает. Отправь текст или голосовое.");
+});
 
-  const response = await axios.get(url, { responseType: 'arraybuffer' });
-  return Buffer.from(response.data);
-}
-
-/* =========================
-   NLP CLOUD SPEECH TO TEXT
-========================= */
-async function speechToText(buffer) {
+// --- text handler ---
+bot.on("text", async (ctx) => {
   try {
-    const response = await axios.post(
-      'https://api.nlpcloud.io/v1/bart-large-speech-recognition/transcription',
-      {
-        audio: buffer.toString('base64')
-      },
+    await ctx.reply("Принял текст: " + ctx.message.text);
+  } catch (e) {
+    console.error("TEXT ERROR:", e);
+  }
+});
+
+// --- voice handler ---
+bot.on("voice", async (ctx) => {
+  try {
+    await ctx.reply("⏳ Голос получен, обрабатываю...");
+
+    const link = await ctx.telegram.getFileLink(ctx.message.voice.file_id);
+
+    const response = await axios.get(link.href, {
+      responseType: "arraybuffer",
+    });
+
+    const filePath = path.join(os.tmpdir(), `${Date.now()}.ogg`);
+    fs.writeFileSync(filePath, Buffer.from(response.data));
+
+    const text = await speechToText(filePath);
+
+    if (!text) {
+      await ctx.reply("❌ Не удалось распознать голос");
+      return;
+    }
+
+    await ctx.reply("📝 Текст: " + text);
+  } catch (e) {
+    console.error("VOICE ERROR:", e);
+    await ctx.reply("❌ Ошибка обработки голоса");
+  }
+});
+
+// --- NLPCloud STT ---
+async function speechToText(filePath) {
+  try {
+    const file = fs.readFileSync(filePath);
+
+    const res = await axios.post(
+      "https://api.nlpcloud.io/v1/asr/whisper",
+      file,
       {
         headers: {
           Authorization: `Token ${NLP_API_KEY}`,
-          'Content-Type': 'application/json'
-        }
+          "Content-Type": "application/octet-stream",
+        },
       }
     );
 
-    return response.data?.text || null;
-  } catch (err) {
-    console.log('STT ERROR:', err?.response?.data || err.message);
+    return res.data?.text || null;
+  } catch (e) {
+    console.error("STT ERROR:", e?.response?.data || e.message);
     return null;
   }
 }
 
-/* =========================
-   /start
-========================= */
-bot.start((ctx) => {
-  ctx.reply('Бот запущен. Отправь текст или голос.');
-});
-
-/* =========================
-   ТЕКСТ
-========================= */
-bot.on('text', async (ctx) => {
+// --- SAFER LAUNCH (fix 409 crash handling) ---
+async function startBot() {
   try {
-    await ctx.reply(`Ты написал: ${ctx.message.text}`);
+    await bot.launch();
+    console.log("Bot started");
   } catch (e) {
-    console.log('TEXT ERROR:', e.message);
+    console.error("LAUNCH ERROR:", e.message);
+    setTimeout(startBot, 5000); // retry вместо падения
   }
-});
+}
 
-/* =========================
-   ГОЛОС
-========================= */
-bot.on('voice', async (ctx) => {
-  const msg = await ctx.reply('⏳ Обрабатываю голос...');
+// graceful stop
+process.once("SIGINT", () => bot.stop("SIGINT"));
+process.once("SIGTERM", () => bot.stop("SIGTERM"));
 
-  try {
-    const fileId = ctx.message.voice.file_id;
-
-    const audioBuffer = await downloadFile(fileId);
-
-    const text = await speechToText(audioBuffer);
-
-    if (!text) {
-      await ctx.telegram.editMessageText(
-        ctx.chat.id,
-        msg.message_id,
-        null,
-        '❌ Не удалось распознать голос'
-      );
-      return;
-    }
-
-    await ctx.telegram.editMessageText(
-      ctx.chat.id,
-      msg.message_id,
-      null,
-      `🎤 Распознано:\n${text}`
-    );
-
-  } catch (err) {
-    console.log('VOICE ERROR:', err.message);
-
-    try {
-      await ctx.telegram.editMessageText(
-        ctx.chat.id,
-        msg.message_id,
-        null,
-        '❌ Ошибка обработки голоса'
-      );
-    } catch {}
-  }
-});
-
-/* =========================
-   ЗАПУСК БОТА (СТАБИЛЬНЫЙ)
-========================= */
-bot.launch();
-
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+startBot();
